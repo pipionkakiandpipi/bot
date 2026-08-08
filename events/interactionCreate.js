@@ -127,6 +127,49 @@ module.exports = {
           return;
         }
 
+        // Bouton "Importer une photo"
+        if (interaction.customId.startsWith('commande_photo_')) {
+          const numero = interaction.customId.replace('commande_photo_', '');
+          const order = getOrder(numero);
+          if (!order) {
+            await interaction.reply({ content: `❌ Commande #${numero} introuvable.`, ephemeral: true });
+            return;
+          }
+          if (order.userId !== interaction.user.id && !isStaffMember(interaction.member)) {
+            await interaction.reply({ content: 'Seul le client ou le staff peut importer une photo.', ephemeral: true });
+            return;
+          }
+
+          draftOrders.set(`photo_${interaction.user.id}`, { numero, ticketChannelId: interaction.channelId });
+          await interaction.reply({
+            content: '📸 Envoie maintenant la photo de l\'article dans ce salon. Tu as 60 secondes.',
+            ephemeral: true,
+          });
+
+          const filter = (m) => m.author.id === interaction.user.id && m.attachments.size > 0;
+          try {
+            const collected = await interaction.channel.awaitMessages({ filter, max: 1, time: 60000, errors: ['time'] });
+            const msg = collected.first();
+            const attachment = msg.attachments.first();
+            const photoUrl = attachment.url;
+            updateOrder(numero, { photoUrl });
+
+            const photoEmbed = new EmbedBuilder()
+              .setTitle(`📸 Photo de l'article — Commande #${numero}`)
+              .setColor(0x5865f2)
+              .setImage(photoUrl)
+              .setFooter({ text: `Ajoutée par ${interaction.user.tag}` });
+
+            await interaction.channel.send({ embeds: [photoEmbed] });
+            await msg.delete().catch(() => {});
+            draftOrders.delete(`photo_${interaction.user.id}`);
+          } catch (err) {
+            draftOrders.delete(`photo_${interaction.user.id}`);
+            await interaction.followUp({ content: '⏱️ Temps écoulé, aucune photo reçue.', ephemeral: true }).catch(() => {});
+          }
+          return;
+        }
+
         // Bouton "Refuser la commande"
         if (interaction.customId.startsWith('commande_refuser_')) {
           if (!isStaffMember(interaction.member)) {
@@ -345,6 +388,24 @@ module.exports = {
             .setFooter({ text: 'Le staff va maintenant traiter le paiement et l\'expédition.' });
 
           await interaction.reply({ embeds: [finalEmbed] });
+
+          // Bouton pour importer une photo de l'article dans le ticket
+          const ticketChannelForPhoto = await interaction.guild.channels
+            .fetch(draft.ticketChannelId)
+            .catch(() => null);
+          if (ticketChannelForPhoto) {
+            const photoRow = new ActionRowBuilder().addComponents(
+              new ButtonBuilder()
+                .setCustomId(`commande_photo_${numero}`)
+                .setLabel('Importer une photo de l\'article')
+                .setStyle(ButtonStyle.Secondary)
+                .setEmoji('📸'),
+            );
+            await ticketChannelForPhoto.send({
+              content: `${interaction.user} 📸 Tu peux importer une photo de l'article souhaité en cliquant sur le bouton ci-dessous, puis en envoyant l'image dans ce salon.`,
+              components: [photoRow],
+            }).catch(() => {});
+          }
 
           // Poste le suivi de commande dans le salon dédié
           if (config.salonSuiviCommande) {
